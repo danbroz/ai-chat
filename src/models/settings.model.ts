@@ -1,7 +1,7 @@
+// src/models/settings.model.ts
+
 export interface Settings {
   id?: number;
-  openaiApiKey: string;
-  openaiTemp: string;
-  openaiModel: string;
-  openaiMaxTokens: string;
+  // Removed openaiApiKey and ragApiKey from frontend settings
+  // Add any other settings as needed
 }

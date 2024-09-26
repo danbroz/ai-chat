@@ -1,103 +1,83 @@
-import {defineStore} from 'pinia';
-import {computed, ref} from 'vue';
-import type {Chat} from '@/models/chat.model';
-import {db} from '@/db';
-import Dexie from 'dexie';
-import type {Message} from '@/models/message.model';
-import {Role} from '@/models/role.model';
+// src/stores/chat.store.ts
 
-export const useChatStore = defineStore('chat', () => {
-  const chats = ref<Chat[]>([]);
-  const currentChatId = ref<number|null>(null);
+import { defineStore } from 'pinia';
+import { db } from '@/db';
+import type { Chat, Message } from '@/models/chat.model';
+import { getChatCompletion } from '@/services/openai.service';
 
-  const currentChat = computed(() => chats.value.find(item => item.id === currentChatId.value));
+export const useChatStore = defineStore('chat', {
+  state: () => ({
+    chats: [] as Chat[],
+    currentChatId: null as number | null,
+  }),
+  actions: {
+    async loadChats() {
+      this.chats = await db.chats.toArray();
+    },
+    async createChat(title: string) {
+      const newChat: Chat = {
+        id: Date.now(),
+        title,
+        messages: [],
+      };
+      await db.chats.add(newChat);
+      this.chats.push(newChat);
+      this.currentChatId = newChat.id;
+    },
+    async addMessage(content: string) {
+      const chat = this.getCurrentChat();
+      if (!chat) {
+        console.error('No chat selected');
+        return;
+      }
 
-  function setCurrentChatId(id: number|null) {
-    currentChatId.value = id;
-  }
+      // User message
+      const userMessage: Message = {
+        role: 'user',
+        content,
+      };
+      chat.messages.push(userMessage);
 
-  async function reloadChats() {
-    try {
-      chats.value = await db.chats.reverse().toArray();
-    } catch (e) {
-      console.error(e);
-    }
-  }
+      // Save the updated chat with the user's message
+      await db.chats.put(chat);
 
-  async function addMessage(message: Message) {
-    if (currentChat.value) {
-      const messages = [...Dexie.deepClone(currentChat.value.messages), message];
+      // Assistant's response
       try {
-        await db.chats.update(currentChatId.value, {messages});
-      } catch (e) {
-        console.error(e);
-      }
-    } else {
-      try {
-        setCurrentChatId(await db.chats.add({
-          title: null,
-          messages: [
-            {role: Role.system, content: 'Always answer in markdown'},
-            message
-          ]
-        }));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    await reloadChats();
-  }
+        // Call the OpenAI API via the backend service
+        const response = await getChatCompletion(chat.messages);
 
-  async function setCurrentChatTitle(title: string|null) {
-    if (currentChat.value) {
-      try {
-        await db.chats.update(currentChatId.value, {title});
-      } catch (e) {
-        console.error(e);
-      }
-      await reloadChats();
-    }
-  }
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: response.choices[0].message.content,
+        };
+        chat.messages.push(assistantMessage);
 
-  async function updateLastMessageStream(messageChunk: string) {
-    if (currentChat.value) {
-      const messages = Dexie.deepClone(currentChat.value.messages);
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage.role === Role.assistant) {
-        lastMessage.content += messageChunk;
-      } else {
-        messages.push({
-          role: Role.assistant,
-          content: messageChunk
-        });
-      }
-      try {
-        await db.chats.update(currentChatId.value, {messages});
-      } catch (e) {
-        console.error(e);
-      }
-      await reloadChats();
-    }
-  }
+        // Save the updated chat with the assistant's reply
+        await db.chats.put(chat);
+      } catch (error) {
+        console.error('Error fetching OpenAI response:', error);
 
-  async function deleteChat(chatId: number|null|undefined) {
-    try {
+        const errorMessage: Message = {
+          role: 'assistant',
+          content: 'Sorry, an error occurred while fetching the response.',
+        };
+        chat.messages.push(errorMessage);
+        await db.chats.put(chat);
+      }
+    },
+    getCurrentChat(): Chat | undefined {
+      return this.chats.find((chat) => chat.id === this.currentChatId);
+    },
+    setCurrentChat(chatId: number) {
+      this.currentChatId = chatId;
+    },
+    async deleteChat(chatId: number) {
       await db.chats.delete(chatId);
-    } catch (e) {
-      console.error(e);
-    }
-    await reloadChats();
-  }
-
-  return {
-    chats,
-    currentChatId,
-    currentChat,
-    setCurrentChatId,
-    reloadChats,
-    addMessage,
-    setCurrentChatTitle,
-    updateLastMessageStream,
-    deleteChat
-  };
+      this.chats = this.chats.filter((chat) => chat.id !== chatId);
+      if (this.currentChatId === chatId) {
+        this.currentChatId = this.chats.length > 0 ? this.chats[0].id : null;
+      }
+    },
+    // Additional actions can be added here
+  },
 });
